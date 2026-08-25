@@ -247,6 +247,67 @@ def make_optimizer(model: nn.Module, strategy: str, config: RunConfig):
     return torch.optim.AdamW(groups, weight_decay=config.weight_decay)
 
 
+def confusion_matrix(labels: torch.Tensor, predictions: torch.Tensor, classes: int) -> torch.Tensor:
+    encoded = labels * classes + predictions
+    return torch.bincount(encoded, minlength=classes * classes).reshape(classes, classes)
+
+
+def classification_metrics(
+    labels: torch.Tensor, predictions: torch.Tensor, probabilities: torch.Tensor, classes: int
+) -> dict[str, float]:
+    matrix = confusion_matrix(labels, predictions, classes).to(torch.float64)
+    true_positive = matrix.diag()
+    precision = true_positive / matrix.sum(dim=0).clamp_min(1)
+    recall = true_positive / matrix.sum(dim=1).clamp_min(1)
+    f1 = 2 * precision * recall / (precision + recall).clamp_min(1e-12)
+    accuracy = true_positive.sum() / matrix.sum().clamp_min(1)
+
+    confidence, _ = probabilities.max(dim=1)
+    correctness = predictions.eq(labels).to(torch.float32)
+    expected_calibration_error = torch.tensor(0.0)
+    boundaries = torch.linspace(0, 1, 11)
+    for lower, upper in zip(boundaries[:-1], boundaries[1:]):
+        selected = (confidence > lower) & (confidence <= upper)
+        if selected.any():
+            expected_calibration_error += selected.float().mean() * (
+                correctness[selected].mean() - confidence[selected].mean()
+            ).abs()
+
+    return {
+        "accuracy": float(accuracy),
+        "macro_f1": float(f1.mean()),
+        "balanced_accuracy": float(recall.mean()),
+        "ece_10_bins": float(expected_calibration_error),
+    }
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, classes: int):
+    model.eval()
+    all_labels: list[torch.Tensor] = []
+    all_predictions: list[torch.Tensor] = []
+    all_probabilities: list[torch.Tensor] = []
+    total_loss = 0.0
+    total_items = 0
+    for batch in loader:
+        images, labels = batch[0].to(device), batch[1].to(device)
+        logits = model(images)
+        loss = F.cross_entropy(logits, labels)
+        probabilities = logits.softmax(dim=1)
+        predictions = probabilities.argmax(dim=1)
+        total_loss += float(loss) * images.size(0)
+        total_items += images.size(0)
+        all_labels.append(labels.cpu())
+        all_predictions.append(predictions.cpu())
+        all_probabilities.append(probabilities.cpu())
+    labels = torch.cat(all_labels)
+    predictions = torch.cat(all_predictions)
+    probabilities = torch.cat(all_probabilities)
+    metrics = classification_metrics(labels, predictions, probabilities, classes)
+    metrics["loss"] = total_loss / max(total_items, 1)
+    return metrics
+
+
 
 
 if __name__ == "__main__":
