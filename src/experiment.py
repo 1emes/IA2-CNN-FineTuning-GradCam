@@ -308,6 +308,67 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, classes
     return metrics
 
 
+def train_strategy(
+    strategy: str,
+    model: nn.Module,
+    train_loader: DataLoader,
+    validation_loader: DataLoader,
+    device: torch.device,
+    classes: int,
+    config: RunConfig,
+    output_dir: Path,
+):
+    optimizer = make_optimizer(model, strategy, config)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
+    scaler = GradScaler("cuda", enabled=device.type == "cuda")
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    best_score = -float("inf")
+    history: list[dict[str, float]] = []
+    checkpoint = output_dir / f"resnet18_{strategy}.pt"
+    started = time.perf_counter()
+
+    for epoch in range(1, config.epochs + 1):
+        model.train()
+        if strategy == "frozen":
+            # Mantém BatchNorm do backbone em modo de avaliação.
+            model.eval()
+            model.fc.train()
+        running_loss = 0.0
+        samples = 0
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            with autocast(device_type=device.type, enabled=device.type == "cuda"):
+                logits = model(images)
+                loss = criterion(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            running_loss += float(loss.detach()) * images.size(0)
+            samples += images.size(0)
+        scheduler.step()
+        validation = evaluate(model, validation_loader, device, classes)
+        record = {
+            "epoch": epoch,
+            "train_loss": running_loss / max(samples, 1),
+            **{f"validation_{key}": value for key, value in validation.items()},
+        }
+        history.append(record)
+        print(
+            f"[{strategy}] época {epoch:02d}/{config.epochs}: "
+            f"loss={record['train_loss']:.4f}, macro-F1={validation['macro_f1']:.4f}"
+        )
+        if validation["macro_f1"] > best_score:
+            best_score = validation["macro_f1"]
+            torch.save(model.state_dict(), checkpoint)
+
+    elapsed = time.perf_counter() - started
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+    with (output_dir / f"history_{strategy}.json").open("w", encoding="utf-8") as stream:
+        json.dump(history, stream, indent=2)
+    return model, history, elapsed
+
+
 
 
 if __name__ == "__main__":
