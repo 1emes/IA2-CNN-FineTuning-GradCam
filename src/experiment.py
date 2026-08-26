@@ -369,6 +369,208 @@ def train_strategy(
     return model, history, elapsed
 
 
+class GradCAM:
+    def __init__(self, model: nn.Module, target_layer: nn.Module) -> None:
+        self.model = model
+        self.activations: torch.Tensor | None = None
+        self.gradients: torch.Tensor | None = None
+        self.handle = target_layer.register_forward_hook(self._forward_hook)
+
+    def _forward_hook(self, _module, _inputs, output: torch.Tensor) -> None:
+        self.activations = output
+        if output.requires_grad:
+            output.register_hook(self._gradient_hook)
+
+    def _gradient_hook(self, gradient: torch.Tensor) -> None:
+        self.gradients = gradient
+
+    def __call__(self, image: torch.Tensor):
+        self.model.zero_grad(set_to_none=True)
+        image = image.detach().clone().requires_grad_(True)
+        logits = self.model(image)
+        predicted = logits.argmax(dim=1)
+        logits[0, predicted.item()].backward()
+        if self.activations is None or self.gradients is None:
+            raise RuntimeError("Hooks do Grad-CAM não capturaram ativações e gradientes.")
+        weights = self.gradients.mean(dim=(2, 3), keepdim=True)
+        cam = torch.relu((weights * self.activations).sum(dim=1, keepdim=True))
+        cam = F.interpolate(cam, size=image.shape[-2:], mode="bilinear", align_corners=False)
+        cam = cam[0, 0]
+        cam = cam - cam.min()
+        cam = cam / cam.max().clamp_min(1e-12)
+        return logits.detach(), predicted.item(), cam.detach()
+
+    def close(self) -> None:
+        self.handle.remove()
+
+
+def spatial_metrics(cam: torch.Tensor, foreground: torch.Tensor, quantile: float):
+    cam = cam.to(torch.float32).cpu()
+    foreground = foreground.to(torch.bool).cpu()
+    salient = cam >= torch.quantile(cam.flatten(), quantile)
+    intersection = (salient & foreground).sum().float()
+    union = (salient | foreground).sum().float().clamp_min(1)
+    maximum = int(cam.argmax())
+    point_inside = foreground.flatten()[maximum]
+    return {
+        "foreground_energy": float(cam[foreground].sum() / cam.sum().clamp_min(1e-12)),
+        "pointing_game": float(point_inside),
+        "foreground_saliency_iou": float(intersection / union),
+    }
+
+
+def map_similarity(first: torch.Tensor, second: torch.Tensor, quantile: float):
+    first_flat = first.flatten().to(torch.float32).cpu()
+    second_flat = second.flatten().to(torch.float32).cpu()
+    cosine = F.cosine_similarity(first_flat, second_flat, dim=0)
+    first_mask = first_flat >= torch.quantile(first_flat, quantile)
+    second_mask = second_flat >= torch.quantile(second_flat, quantile)
+    intersection = (first_mask & second_mask).sum().float()
+    union = (first_mask | second_mask).sum().float().clamp_min(1)
+    return float(cosine), float(intersection / union)
+
+
+def unnormalize(image: torch.Tensor) -> np.ndarray:
+    mean = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD).view(3, 1, 1)
+    restored = (image.cpu() * std + mean).clamp(0, 1)
+    return restored.permute(1, 2, 0).numpy()
+
+
+def save_gradcam_figure(examples: list[dict], class_names: list[str], path: Path) -> None:
+    if not examples:
+        return
+    figure, axes = plt.subplots(len(examples), 3, figsize=(8.0, 2.65 * len(examples)), squeeze=False)
+    for row, example in enumerate(examples):
+        original = unnormalize(example["image"])
+        axes[row, 0].imshow(original)
+        axes[row, 0].set_title(f"Real: {class_names[example['label']]}", fontsize=8)
+        for column, strategy in enumerate(STRATEGIES, start=1):
+            axes[row, column].imshow(original)
+            axes[row, column].imshow(example[strategy]["cam"].cpu(), cmap="jet", alpha=0.45)
+            predicted = class_names[example[strategy]["prediction"]]
+            axes[row, column].set_title(f"{strategy}: {predicted}", fontsize=8)
+        for axis in axes[row]:
+            axis.axis("off")
+    figure.tight_layout()
+    figure.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(figure)
+
+
+def analyze_gradcam(
+    models: dict[str, nn.Module],
+    test_loader: DataLoader,
+    device: torch.device,
+    class_names: list[str],
+    config: RunConfig,
+    output_dir: Path,
+):
+    cams = {strategy: GradCAM(model, model.layer4[-1].conv2) for strategy, model in models.items()}
+    rows: list[dict] = []
+    paired: list[dict] = []
+    examples: list[dict] = []
+    processed = 0
+    for batch in test_loader:
+        images, labels, masks = batch
+        for position in range(images.size(0)):
+            if processed >= config.gradcam_samples:
+                break
+            image = images[position : position + 1].to(device)
+            label = int(labels[position])
+            foreground = masks[position]
+            sample: dict = {"image": images[position], "label": label}
+            strategy_results = {}
+            for strategy in STRATEGIES:
+                logits, prediction, cam = cams[strategy](image)
+                metrics = spatial_metrics(cam, foreground, config.saliency_quantile)
+                probability = float(logits.softmax(dim=1)[0, prediction])
+                strategy_results[strategy] = {
+                    "prediction": prediction,
+                    "confidence": probability,
+                    "cam": cam.cpu(),
+                    **metrics,
+                }
+                rows.append(
+                    {
+                        "sample": processed,
+                        "strategy": strategy,
+                        "label": label,
+                        "prediction": prediction,
+                        "correct": int(prediction == label),
+                        "confidence": probability,
+                        **metrics,
+                    }
+                )
+            sample.update(strategy_results)
+            cosine, overlap = map_similarity(
+                strategy_results["frozen"]["cam"],
+                strategy_results["full"]["cam"],
+                config.saliency_quantile,
+            )
+            paired.append(
+                {
+                    "sample": processed,
+                    "same_prediction": int(
+                        strategy_results["frozen"]["prediction"]
+                        == strategy_results["full"]["prediction"]
+                    ),
+                    "foreground_energy_delta": strategy_results["full"]["foreground_energy"]
+                    - strategy_results["frozen"]["foreground_energy"],
+                    "pointing_game_delta": strategy_results["full"]["pointing_game"]
+                    - strategy_results["frozen"]["pointing_game"],
+                    "foreground_saliency_iou_delta": strategy_results["full"][
+                        "foreground_saliency_iou"
+                    ]
+                    - strategy_results["frozen"]["foreground_saliency_iou"],
+                    "cam_cosine_similarity": cosine,
+                    "cam_top_region_iou": overlap,
+                }
+            )
+            if len(examples) < 6:
+                examples.append(sample)
+            processed += 1
+        if processed >= config.gradcam_samples:
+            break
+
+    for cam in cams.values():
+        cam.close()
+
+    fieldnames = list(rows[0].keys()) if rows else []
+    if rows:
+        with (output_dir / "gradcam_per_sample.csv").open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+    if paired:
+        paired_fields = sorted({key for row in paired for key in row})
+        with (output_dir / "gradcam_paired.csv").open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=paired_fields)
+            writer.writeheader()
+            writer.writerows(paired)
+
+    figures = output_dir / "figures"
+    figures.mkdir(parents=True, exist_ok=True)
+    save_gradcam_figure(examples, class_names, figures / "gradcam_examples.png")
+
+    summary = {}
+    for strategy in STRATEGIES:
+        strategy_rows = [row for row in rows if row["strategy"] == strategy]
+        for metric in ("foreground_energy", "pointing_game", "foreground_saliency_iou"):
+            values = [row[metric] for row in strategy_rows]
+            summary[f"{strategy}_{metric}_mean"] = float(np.mean(values))
+            summary[f"{strategy}_{metric}_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+    for metric in (
+        "foreground_energy_delta",
+        "pointing_game_delta",
+        "foreground_saliency_iou_delta",
+        "cam_cosine_similarity",
+        "cam_top_region_iou",
+    ):
+        values = [row[metric] for row in paired]
+        summary[f"{metric}_mean"] = float(np.mean(values))
+    return summary
+
+
 
 
 if __name__ == "__main__":
