@@ -571,7 +571,79 @@ def analyze_gradcam(
     return summary
 
 
+def save_training_curves(histories: dict[str, list[dict]], path: Path) -> None:
+    figure, axes = plt.subplots(1, 2, figsize=(8.0, 3.2))
+    for strategy, history in histories.items():
+        epochs = [row["epoch"] for row in history]
+        axes[0].plot(epochs, [row["train_loss"] for row in history], marker="o", label=strategy)
+        axes[1].plot(
+            epochs,
+            [row["validation_macro_f1"] for row in history],
+            marker="o",
+            label=strategy,
+        )
+    axes[0].set(xlabel="Época", ylabel="Perda de treinamento")
+    axes[1].set(xlabel="Época", ylabel="Macro-F1 de validação")
+    for axis in axes:
+        axis.grid(alpha=0.25)
+        axis.legend()
+    figure.tight_layout()
+    figure.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(figure)
+
+
+def main() -> None:
+    config = parse_args()
+    set_seed(config.seed)
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "figures").mkdir(exist_ok=True)
+    with (output_dir / "config.json").open("w", encoding="utf-8") as stream:
+        json.dump(asdict(config), stream, indent=2)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Dispositivo: {device}")
+    train_loader, validation_loader, test_loader, class_names = make_dataloaders(config)
+    print(
+        f"Amostras: treino={len(train_loader.dataset)}, validação={len(validation_loader.dataset)}, "
+        f"teste={len(test_loader.dataset)}"
+    )
+
+    models: dict[str, nn.Module] = {}
+    histories: dict[str, list[dict]] = {}
+    final_metrics: list[dict] = []
+    for strategy in STRATEGIES:
+        set_seed(config.seed)
+        model = build_model(strategy, len(class_names), device)
+        model, history, elapsed = train_strategy(
+            strategy,
+            model,
+            train_loader,
+            validation_loader,
+            device,
+            len(class_names),
+            config,
+            output_dir,
+        )
+        metrics = evaluate(model, test_loader, device, len(class_names))
+        metrics.update({"strategy": strategy, "training_seconds": elapsed})
+        final_metrics.append(metrics)
+        models[strategy] = model
+        histories[strategy] = history
+
+    save_training_curves(histories, output_dir / "figures" / "training_curves.png")
+    gradcam_summary = analyze_gradcam(
+        models, test_loader, device, class_names, config, output_dir
+    )
+    with (output_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as stream:
+        fields = list(final_metrics[0].keys())
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(final_metrics)
+    with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
+        json.dump({"classification": final_metrics, "gradcam": gradcam_summary}, stream, indent=2)
+    print(f"Resultados gravados em: {output_dir.resolve()}")
 
 
 if __name__ == "__main__":
-    print("Módulo de experimento – em construção.")
+    main()
