@@ -93,18 +93,63 @@ Exemplos para Grad-CAM & 200 por semente \\
 \end{tabular}
 \end{table}
 
-
 \section{Resultados}
 
-\textcolor{red}{Seção a ser preenchida após os experimentos.}
+\begin{table}[t]
+\caption{Desempenho no conjunto de teste (média $\pm$ desvio-padrão).}
+\label{tab:classification}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Estratégia & Acc. & Macro-F1 & Bal. Acc. & ECE \\
+\midrule
+Frozen & $0.8946\pm0.0026$ & $0.8934\pm0.0026$ & $0.8939\pm0.0027$ & $0.1846\pm0.0034$ \\
+Full   & $0.8959\pm0.0029$ & $0.8948\pm0.0026$ & $0.8952\pm0.0029$ & $0.1793\pm0.0078$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A Tabela~\ref{tab:classification} apresenta médias e desvios-padrão entre as três sementes. O fine-tuning completo elevou a acurácia de $0.8946$ para $0.8959$ (diferença de $+0.0013$) e o macro-F1 de $0.8934$ para $0.8948$. A balanced accuracy apresentou comportamento semelhante. O ECE diminuiu de $0.1846$ para $0.1793$, indicando uma pequena melhora de calibração, embora a diferença seja modesta diante da variabilidade entre sementes.
+
+\begin{table}[t]
+\caption{Alinhamento do Grad-CAM com o animal.}
+\label{tab:spatial}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Estratégia & Energia & Pointing & IoU \\
+\midrule
+Frozen & $0.7744\pm0.0013$ & $0.9833\pm0.0029$ & $0.3263\pm0.0007$ \\
+Full   & $0.8004\pm0.0004$ & $0.9900\pm0.0087$ & $0.3291\pm0.0010$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\IfFileExists{gradcam_examples.png}{%
+  \includegraphics[width=\columnwidth]{gradcam_examples.png}%
+}{%
+  \fbox{\parbox[c][3.0cm][c]{0.88\columnwidth}{\centering
+  Figura gerada automaticamente pelo experimento.}}%
+}
+\caption{Exemplos de mapas Grad-CAM para backbone congelado e fine-tuning completo.}
+\label{fig:gradcam}
+\end{figure}
+
+A Tabela~\ref{tab:spatial} mostra que as três métricas espaciais aumentaram no ajuste completo: a energia no primeiro plano cresceu $0.0260$, o pointing game cresceu $0.0067$ e a IoU de saliência cresceu $0.0027$. A similaridade cosseno média entre os mapas foi $0.9497$ e a IoU entre suas regiões de maior ativação foi $0.6301$, indicando mapas bastante semelhantes, mas não idênticos. Portanto, neste experimento, o aumento de acurácia não veio acompanhado de pior alinhamento espacial; ao contrário, houve uma melhora pequena e consistente nos indicadores de localização. A Figura~\ref{fig:gradcam} ilustra exemplos qualitativos dessa comparação.
 
 \section{Discussão}
 
-\textcolor{red}{Seção a ser preenchida após os resultados.}
+Há quatro resultados possíveis. Primeiro, ganho preditivo acompanhado de maior alinhamento com o animal indicaria adaptação útil das representações. Segundo, ganho de acurácia com menor alinhamento sugeriria exploração de correlações do fundo. Terceiro, mapas diferentes com desempenho semelhante mostrariam que modelos funcionalmente próximos podem usar evidências distintas. Finalmente, ausência de mudanças relevantes indicaria que as características pré-treinadas já são adequadas ao domínio.
+
+O Grad-CAM possui resolução espacial limitada e não constitui explicação causal. A máscara informa onde está o animal, mas não quais partes distinguem uma raça; portanto, atenção no primeiro plano é uma condição desejável, não uma prova de raciocínio correto. Além disso, as duas estratégias usam taxas de aprendizado distintas por necessidade de otimização. Embora os resultados observados não indiquem maior dependência do fundo, um teste de ablação ou oclusão do fundo seria necessário para estabelecer causalidade. Os resultados não devem ser generalizados para outras arquiteturas ou domínios sem novos experimentos.
 
 \section{Conclusão}
 
-\textcolor{red}{Seção a ser preenchida ao final.}
+Este trabalho avaliou o fine-tuning como uma mudança tanto de desempenho quanto de evidência visual. No Oxford-IIIT Pet, o ajuste completo produziu ganhos modestos de acurácia e macro-F1, reduziu o ECE e aumentou as três métricas de alinhamento do Grad-CAM com o animal. Assim, para este protocolo, a resposta às duas perguntas de pesquisa é que o fine-tuning alterou não apenas a acurácia, mas também as regiões salientadas, em direção a um alinhamento ligeiramente maior com o primeiro plano. A conclusão é restrita ao conjunto de dados, à arquitetura e às sementes utilizadas; experimentos de oclusão do fundo são um próximo passo para testar se essa associação é causal.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
