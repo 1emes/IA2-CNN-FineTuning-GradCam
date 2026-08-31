@@ -1,0 +1,15 @@
+{
+  "data_dir": "data",
+  "output_dir": "results\\smoke2",
+  "epochs": 1,
+  "batch_size": 32,
+  "workers": 0,
+  "seed": 42,
+  "train_fraction": 0.03,
+  "learning_rate_head": 0.001,
+  "learning_rate_backbone": 0.0001,
+  "weight_decay": 0.0001,
+  "gradcam_samples": 8,
+  "saliency_quantile": 0.8,
+  "test_limit": 64
+}
