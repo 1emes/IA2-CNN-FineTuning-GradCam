@@ -7,149 +7,121 @@
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage{microtype}
-\usepackage{xcolor}
 \usepackage{url}
 
-\graphicspath{{../results/main/figures/}{../results/smoke5/figures/}{../results/figures/}}
+\renewcommand{\IEEEkeywordsname}{Palavras-chave}
 
-\title{O Fine-Tuning Altera Apenas a Acurácia ou Também as Regiões Utilizadas por uma CNN?}
+\graphicspath{{../results/aggregate/figures/}{../results/smoke5/figures/}}
 
-\author{\IEEEauthorblockN{Eduardo Jesus Dal Pizzol -- 251008114\\
-Matheus Lemes Amaral -- 241031852}
-\IEEEauthorblockA{Universidade de Brasília -- UnB\\
-FGA0261 -- Inteligência Artificial II}}
+\title{Fine-Tuning e Regiões de Atenção em CNNs: Protocolo Experimental com Grad-CAM}
+
+\author{%
+\IEEEauthorblockN{Eduardo Jesus Dal Pizzol e Matheus Lemes Amaral}
+\IEEEauthorblockA{Universidade de Brasília (UnB)\\
+FGA0261 - Inteligência Artificial II\\
+Matrículas: 251008114 e 241031852}}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-O aprendizado por transferência é amplamente empregado em classificação de imagens, mas sua avaliação costuma se limitar ao desempenho preditivo. Este trabalho investiga se o ajuste completo de uma rede convolucional também modifica as regiões da imagem usadas em suas decisões. Uma ResNet-18 pré-treinada no ImageNet é avaliada no Oxford-IIIT Pet sob duas estratégias: extração de características com o backbone congelado e ajuste fino de todos os parâmetros. Além de acurácia, macro-F1 e calibração, mapas Grad-CAM são comparados com as máscaras de segmentação dos animais por energia no primeiro plano, pointing game e interseção sobre união. O protocolo permite distinguir ganho de desempenho de mudança efetiva na localização da evidência visual e identificar possível dependência do fundo. Os resultados são agregados sobre três sementes e analisados de forma pareada.
+Este trabalho propõe um protocolo para avaliar se o ajuste fino de uma rede neural convolucional altera não apenas seu desempenho preditivo, mas também as regiões da imagem usadas na classificação. Uma ResNet-18 pré-treinada no ImageNet é comparada em duas condições: extrator de características congelado e ajuste de todos os parâmetros. O desempenho é medido por acurácia, macro-F1, acurácia balanceada e erro esperado de calibração. O alinhamento espacial é avaliado com mapas de ativação de classe ponderados por gradientes (Grad-CAM) e máscaras de segmentação do Oxford-IIIT Pet. A execução reduzida preservada no projeto confirma o funcionamento do fluxo, mas não permite responder às perguntas de pesquisa. O experimento conclusivo requer três sementes aleatórias, treinamento completo e amostragem estratificada para a análise espacial.
 \end{abstract}
 
 \begin{IEEEkeywords}
-redes neurais convolucionais, transferência de aprendizado, fine-tuning, Grad-CAM, explicabilidade
+redes neurais convolucionais, aprendizado por transferência, Grad-CAM, explicabilidade, ajuste fino
 \end{IEEEkeywords}
 
 \section{Introdução}
 
-Redes neurais convolucionais (CNNs) transformaram a classificação visual ao aprender representações diretamente dos pixels \cite{krizhevsky2012imagenet}. Arquiteturas residuais permitiram treinar modelos mais profundos e tornaram-se backbones comuns em aprendizado por transferência \cite{he2016deep}. Nesse cenário, um modelo pré-treinado em grande escala é adaptado para uma tarefa com menos dados, congelando o extrator de características ou ajustando seus parâmetros.
+Redes neurais convolucionais (CNNs) aprendem representações diretamente dos pixels e alcançam bons resultados em classificação visual \cite{krizhevsky2012imagenet}. Arquiteturas residuais facilitaram o treinamento de redes mais profundas e tornaram-se extratores de características amplamente utilizados em aprendizado por transferência \cite{he2016deep}. Nesse cenário, um modelo pré-treinado em grande escala é adaptado para uma tarefa com menos dados, seja mantendo o extrator congelado, seja ajustando seus parâmetros.
 
-Embora modelos com melhor desempenho no ImageNet geralmente apresentem melhor transferência, essa relação depende da tarefa e do procedimento de adaptação \cite{kornblith2019better}. Comparações baseadas somente em acurácia não mostram se o modelo aprendeu evidências semanticamente adequadas. Uma CNN pode melhorar a classificação explorando correlações do fundo em vez das características do objeto.
+O desempenho obtido na tarefa de origem não determina sozinho a qualidade da transferência \cite{kornblith2019better}. Além disso, uma melhora de acurácia não demonstra que o modelo passou a usar evidências semanticamente adequadas: correlações do fundo podem sustentar uma predição correta. O Grad-CAM permite inspecionar a importância espacial derivada dos gradientes da classe \cite{selvaraju2017gradcam}, mas mapas visualmente plausíveis também devem ser interpretados com cautela \cite{adebayo2018sanity}.
 
-O Grad-CAM produz mapas de importância espacial a partir dos gradientes da classe em relação às ativações convolucionais \cite{selvaraju2017gradcam}. Entretanto, mapas visualmente plausíveis não são evidência suficiente de explicabilidade, pois alguns métodos de saliência podem ser pouco sensíveis aos parâmetros aprendidos \cite{adebayo2018sanity}. Por isso, este trabalho combina inspeção qualitativa e métricas calculadas contra máscaras de segmentação.
-
-São investigadas duas perguntas: \textbf{RQ1}: o fine-tuning completo melhora a classificação em relação ao backbone congelado? \textbf{RQ2}: ele altera a localização da evidência visual e seu alinhamento com o animal? A contribuição é um protocolo reproduzível que relaciona desempenho, calibração e atenção espacial em pares de modelos com a mesma arquitetura e inicialização pré-treinada.
+Este estudo investiga duas perguntas. \textbf{RQ1}: o ajuste fino completo melhora a classificação em relação ao extrator congelado? \textbf{RQ2}: ele modifica o alinhamento da evidência visual com o animal? A contribuição é um protocolo reproduzível que combina métricas preditivas, calibração e medidas espaciais calculadas de forma pareada.
 
 \section{Materiais e Métodos}
 
 \subsection{Dados e particionamento}
 
-É utilizado o Oxford-IIIT Pet, composto por imagens de 37 raças de cães e gatos, acompanhado de rótulos de classe e máscaras de segmentação \cite{parkhi2012cats}. O conjunto oficial de treino e validação é particionado de forma estratificada em 80\% para treinamento e 20\% para validação; o teste oficial permanece isolado. As imagens são redimensionadas e recortadas para $224\times224$ pixels, com normalização do ImageNet. No treinamento são aplicados recorte aleatório, espelhamento horizontal e pequenas variações de cor.
+O Oxford-IIIT Pet contém imagens de 37 raças de cães e gatos, rótulos de classe e máscaras de segmentação \cite{parkhi2012cats}. O conjunto oficial \emph{trainval} é particionado de forma estratificada em 80\% para treinamento e 20\% para validação; o teste oficial permanece isolado. As imagens são redimensionadas e recortadas para $224\times224$ pixels, com a normalização usada no ImageNet. No treinamento, aplicam-se recorte aleatório, espelhamento horizontal e pequenas variações de cor.
+
+As máscaras possuem três valores: primeiro plano, fundo e região de contorno não classificada. Para evitar que a borda incerta seja contabilizada como parte do animal, somente os pixels rotulados explicitamente como primeiro plano são usados nas métricas espaciais.
 
 \subsection{Estratégias de transferência}
 
-Os experimentos usam uma ResNet-18 com pesos do ImageNet e uma nova camada linear para 37 classes. Na estratégia \emph{frozen}, o backbone permanece congelado e apenas o classificador é otimizado. Na estratégia \emph{full}, todos os parâmetros são ajustados, usando taxa de aprendizado menor no backbone do que no classificador. AdamW, suavização de rótulos e decaimento cosseno da taxa de aprendizado são usados em ambas as condições.
+Os experimentos usam uma ResNet-18 com pesos do ImageNet e uma nova camada linear para as 37 classes. Na condição \emph{frozen}, o extrator permanece congelado e apenas o classificador é otimizado. Na condição \emph{full}, todos os parâmetros são ajustados, com taxa de aprendizado menor no extrator do que no classificador. Ambas as condições usam AdamW, suavização de rótulos e decaimento cosseno da taxa de aprendizado.
 
-Cada condição é executada com as sementes 42, 123 e 2026. O melhor checkpoint é escolhido pelo macro-F1 de validação. São reportados acurácia, macro-F1, balanced accuracy e erro esperado de calibração com dez intervalos. Essa combinação evita que classes mais fáceis ou frequentes dominem a análise.
+Para uma comparação controlada, cada condição recebe a mesma divisão dos dados, a mesma inicialização do classificador e a mesma ordem inicial de minibatches. O melhor \emph{checkpoint} é selecionado pelo macro-F1 de validação. O protocolo completo prevê as sementes 42, 123 e 2026, 15 épocas e todo o conjunto de treinamento.
 
-\subsection{Grad-CAM e métricas espaciais}
+\subsection{Métricas preditivas e espaciais}
+
+São calculados acurácia, macro-F1, acurácia balanceada e erro esperado de calibração (ECE) com dez intervalos. O macro-F1 e a acurácia balanceada reduzem a influência de diferenças de dificuldade entre classes, enquanto o ECE compara confiança e frequência de acertos.
 
 Para uma classe $c$, o peso do mapa de características $A^k$ é obtido pela média espacial dos gradientes:
 \begin{equation}
 \alpha_k^c=\frac{1}{Z}\sum_i\sum_j\frac{\partial y^c}{\partial A_{ij}^k}.
 \end{equation}
-O mapa Grad-CAM é então calculado por
+O mapa Grad-CAM é dado por
 \begin{equation}
-L_{\mathrm{GC}}^c=\operatorname{ReLU}\left(\sum_k\alpha_k^c A^k\right),
+L_{\mathrm{GC}}^c=\operatorname{ReLU}\left(\sum_k\alpha_k^c A^k\right)
 \end{equation}
-e redimensionado para a resolução de entrada. O mapa é gerado para a classe predita por cada modelo na última convolução do bloco residual final.
+e redimensionado para a resolução de entrada.
 
-Três métricas avaliam seu alinhamento com a máscara $M$ do animal. A \emph{energia no primeiro plano} é a fração da intensidade do mapa contida em $M$; o \emph{pointing game} verifica se o máximo do mapa está no animal; e a IoU de saliência compara $M$ com os 20\% pixels de maior ativação. Para cada imagem também são calculadas a similaridade cosseno e a IoU entre as regiões mais salientes dos dois modelos.
+O alinhamento com a máscara do animal é descrito por três medidas: energia do mapa no primeiro plano, \emph{pointing game} e interseção sobre união (IoU) dos 20\% de pixels mais salientes. A análise pareada também calcula a similaridade cosseno e a IoU entre os mapas das duas condições. Para reduzir viés de ordenação, as imagens destinadas ao Grad-CAM são escolhidas por amostragem estratificada entre as classes do teste.
 
-As diferenças de métricas espaciais são calculadas por imagem, reduzindo a variabilidade causada pela composição do teste. São apresentadas médias e desvios-padrão entre as três sementes, acompanhados de exemplos de acertos, erros e mudanças de predição.
+\section{Implementação e Reprodutibilidade}
 
-\subsection{Implementação e reprodutibilidade}
-O protocolo foi implementado em um notebook independente para execução no Google Colab, sem dependência do arquivo externo de experimento. A função de carregamento baixa o Oxford-IIIT Pet, constrói as partições estratificadas e aplica as transformações de treinamento e validação descritas anteriormente. Para cada semente, a função de execução instancia duas cópias da ResNet-18, treina primeiro a condição \emph{frozen} e depois a condição \emph{full}, selecionando o checkpoint de maior macro-F1 na validação. Em seguida, o mesmo conjunto de teste é usado para calcular as métricas preditivas e gerar os mapas Grad-CAM.
+O protocolo está implementado em um notebook independente para Google Colab. O código baixa os dados, constrói as partições, treina as duas condições, seleciona os melhores \emph{checkpoints}, avalia o teste e exporta tabelas, históricos e figuras. Resultados rápidos e completos são gravados separadamente. O agregador exige as três sementes antes de produzir médias e desvios-padrão, prepara um arquivo compactado e separa a figura destinada ao artigo.
 
-O código mantém a comparação pareada: os modelos de cada semente recebem a mesma divisão de dados e a mesma inicialização pseudoaleatória, enquanto diferem apenas na política de atualização dos parâmetros. A rotina de análise percorre as imagens de teste, registra a classe predita, a confiança e as três métricas espaciais, e salva os resultados por imagem em arquivos CSV. Também são salvos exemplos visuais dos mapas, permitindo a inspeção qualitativa de acertos e erros. Uma rotina de agregação lê os arquivos de resumo das três sementes e calcula as médias e os desvios-padrão usados nas tabelas deste artigo.
+\section{Validação Preliminar}
 
-Para reduzir o risco de confundir uma falha de instalação com um resultado científico, o notebook possui dois modos. O modo rápido usa uma época e uma fração pequena dos dados apenas para verificar o fluxo; o modo completo usa 15 épocas, o conjunto integral e 200 exemplos para Grad-CAM. Somente o segundo modo é utilizado nas tabelas e na discussão. A Tabela~\ref{tab:protocol} resume os principais parâmetros do protocolo.
-
-\begin{table}[t]
-\caption{Parâmetros principais da implementação.}
-\label{tab:protocol}
-\centering
-\small
-\begin{tabular}{ll}
-\toprule
-Parâmetro & Configuração \\
-\midrule
-Arquitetura & ResNet-18, pesos ImageNet \\
-Classes & 37 raças de cães e gatos \\
-Épocas no modo completo & 15 \\
-Sementes & 42, 123 e 2026 \\
-Exemplos para Grad-CAM & 200 por semente \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section{Resultados}
+Os únicos resultados preservados no projeto correspondem a uma validação funcional com uma época, 3\% dos dados de treinamento, 16 imagens de teste e dois mapas Grad-CAM. A Tabela~\ref{tab:smoke} registra os valores de classificação dessa execução. Eles verificam a passagem completa pelos componentes do sistema, mas não estimam o desempenho final dos modelos.
 
 \begin{table}[t]
-\caption{Desempenho no conjunto de teste (média $\pm$ desvio-padrão).}
-\label{tab:classification}
+\caption{Validação funcional preservada no projeto (semente 42).}
+\label{tab:smoke}
 \centering
 \small
 \begin{tabular}{lcccc}
 \toprule
-Estratégia & Acc. & Macro-F1 & Bal. Acc. & ECE \\
+Condição & Acurácia & Macro-F1 & ECE & Perda \\
 \midrule
-Frozen & $0.8946\pm0.0026$ & $0.8934\pm0.0026$ & $0.8939\pm0.0027$ & $0.1846\pm0.0034$ \\
-Full   & $0.8959\pm0.0029$ & $0.8948\pm0.0026$ & $0.8952\pm0.0029$ & $0.1793\pm0.0078$ \\
+\emph{Frozen} & 0,0000 & 0,0000 & 0,0729 & 4,8449 \\
+\emph{Full}   & 0,0000 & 0,0000 & 0,0966 & 4,7307 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-A Tabela~\ref{tab:classification} apresenta médias e desvios-padrão entre as três sementes. O fine-tuning completo elevou a acurácia de $0.8946$ para $0.8959$ (diferença de $+0.0013$) e o macro-F1 de $0.8934$ para $0.8948$. A balanced accuracy apresentou comportamento semelhante. O ECE diminuiu de $0.1846$ para $0.1793$, indicando uma pequena melhora de calibração, embora a diferença seja modesta diante da variabilidade entre sementes.
-
-\begin{table}[t]
-\caption{Alinhamento do Grad-CAM com o animal.}
-\label{tab:spatial}
-\centering
-\small
-\begin{tabular}{lccc}
-\toprule
-Estratégia & Energia & Pointing & IoU \\
-\midrule
-Frozen & $0.7744\pm0.0013$ & $0.9833\pm0.0029$ & $0.3263\pm0.0007$ \\
-Full   & $0.8004\pm0.0004$ & $0.9900\pm0.0087$ & $0.3291\pm0.0010$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+Os valores nulos de acurácia são compatíveis com uma verificação extremamente curta e não indicam falha do protocolo. Como apenas 16 exemplos foram avaliados, não se devem comparar as condições nem extrapolar esses números para o conjunto de teste completo.
 
 \begin{figure}[t]
 \centering
-\IfFileExists{gradcam_examples.png}{%
-  \includegraphics[width=\columnwidth]{gradcam_examples.png}%
+\IfFileExists{../results/aggregate/figures/gradcam_examples.png}{%
+  \includegraphics[width=\columnwidth]{../results/aggregate/figures/gradcam_examples.png}%
 }{%
-  \fbox{\parbox[c][3.0cm][c]{0.88\columnwidth}{\centering
-  Figura gerada automaticamente pelo experimento.}}%
+  \IfFileExists{../results/smoke5/figures/gradcam_examples.png}{%
+    \includegraphics[width=\columnwidth]{../results/smoke5/figures/gradcam_examples.png}%
+  }{%
+    \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
+    Figura ainda não gerada pelo notebook.}}%
+  }%
 }
-\caption{Exemplos de mapas Grad-CAM para backbone congelado e fine-tuning completo.}
+\caption{Exemplos diagnósticos da execução reduzida. A figura confirma a geração dos mapas, mas não constitui evidência comparativa.}
 \label{fig:gradcam}
 \end{figure}
 
-A Tabela~\ref{tab:spatial} mostra que as três métricas espaciais aumentaram no ajuste completo: a energia no primeiro plano cresceu $0.0260$, o pointing game cresceu $0.0067$ e a IoU de saliência cresceu $0.0027$. A similaridade cosseno média entre os mapas foi $0.9497$ e a IoU entre suas regiões de maior ativação foi $0.6301$, indicando mapas bastante semelhantes, mas não idênticos. Portanto, neste experimento, o aumento de acurácia não veio acompanhado de pior alinhamento espacial; ao contrário, houve uma melhora pequena e consistente nos indicadores de localização. A Figura~\ref{fig:gradcam} ilustra exemplos qualitativos dessa comparação.
+A Figura~\ref{fig:gradcam} é identificada como diagnóstica porque contém apenas duas imagens da execução reduzida. As métricas espaciais dessa execução também não são reportadas, pois foram calculadas antes da correção do tratamento da borda das máscaras.
 
-\section{Discussão}
+\section{Ameaças à Validade e Trabalho Pendente}
 
-Há quatro resultados possíveis. Primeiro, ganho preditivo acompanhado de maior alinhamento com o animal indicaria adaptação útil das representações. Segundo, ganho de acurácia com menor alinhamento sugeriria exploração de correlações do fundo. Terceiro, mapas diferentes com desempenho semelhante mostrariam que modelos funcionalmente próximos podem usar evidências distintas. Finalmente, ausência de mudanças relevantes indicaria que as características pré-treinadas já são adequadas ao domínio.
+O Grad-CAM tem resolução espacial limitada e não constitui explicação causal. A máscara informa onde está o animal, mas não quais partes distinguem uma raça. Portanto, maior atenção no primeiro plano é desejável, mas não prova que a decisão esteja correta. Testes de oclusão do fundo ou remoção controlada do primeiro plano seriam necessários para avaliar causalidade.
 
-O Grad-CAM possui resolução espacial limitada e não constitui explicação causal. A máscara informa onde está o animal, mas não quais partes distinguem uma raça; portanto, atenção no primeiro plano é uma condição desejável, não uma prova de raciocínio correto. Além disso, as duas estratégias usam taxas de aprendizado distintas por necessidade de otimização. Embora os resultados observados não indiquem maior dependência do fundo, um teste de ablação ou oclusão do fundo seria necessário para estabelecer causalidade. Os resultados não devem ser generalizados para outras arquiteturas ou domínios sem novos experimentos.
+Antes de formular conclusões quantitativas, o notebook deve executar integralmente as três sementes e preservar configurações, históricos, métricas por amostra e resumos. O texto deverá ser atualizado exclusivamente a partir dos arquivos agregados, considerando a variação entre sementes.
 
 \section{Conclusão}
 
-Este trabalho avaliou o fine-tuning como uma mudança tanto de desempenho quanto de evidência visual. No Oxford-IIIT Pet, o ajuste completo produziu ganhos modestos de acurácia e macro-F1, reduziu o ECE e aumentou as três métricas de alinhamento do Grad-CAM com o animal. Assim, para este protocolo, a resposta às duas perguntas de pesquisa é que o fine-tuning alterou não apenas a acurácia, mas também as regiões salientadas, em direção a um alinhamento ligeiramente maior com o primeiro plano. A conclusão é restrita ao conjunto de dados, à arquitetura e às sementes utilizadas; experimentos de oclusão do fundo são um próximo passo para testar se essa associação é causal.
+O projeto define um protocolo adequado para comparar ajuste fino completo e extração de características, incluindo desempenho preditivo, calibração e alinhamento espacial. A revisão corrigiu fatores que poderiam comprometer a comparação, como a interpretação da borda das máscaras, a ordem de minibatches e a seleção das imagens de Grad-CAM. No estado atual, entretanto, a execução preservada é apenas uma validação funcional; portanto, ainda não é possível responder de maneira sustentada às duas perguntas de pesquisa. A conclusão final depende da execução completa e da agregação rastreável das três sementes.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

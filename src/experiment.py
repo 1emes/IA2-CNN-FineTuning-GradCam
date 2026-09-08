@@ -62,6 +62,12 @@ class PetEvaluationDataset(Dataset):
             download=download,
         )
         self.classes = self.dataset.classes
+        labels = getattr(self.dataset, "_labels", None)
+        self.labels = (
+            [int(label) for label in labels]
+            if labels is not None
+            else [int(self.dataset[index][1][0]) for index in range(len(self.dataset))]
+        )
         self.image_transform = transforms.Compose(
             [
                 transforms.Resize(256),
@@ -86,8 +92,9 @@ class PetEvaluationDataset(Dataset):
         label, trimap = target
         image_tensor = self.image_transform(image)
         mask_tensor = self.mask_transform(trimap).squeeze(0)
-        # Oxford-IIIT Pet: 1 = animal, 2 = fundo, 3 = contorno.
-        foreground = (mask_tensor != 2).to(torch.bool)
+        # Oxford-IIIT Pet: 1 = animal, 2 = fundo, 3 = contorno não classificado.
+        # O contorno incerto não deve ser contado como primeiro plano.
+        foreground = (mask_tensor == 1).to(torch.bool)
         return image_tensor, int(label), foreground
 
 
@@ -150,6 +157,52 @@ def stratified_indices(
     rng.shuffle(train_indices)
     rng.shuffle(validation_indices)
     return train_indices, validation_indices
+
+
+def stratified_sample_indices(labels: Iterable[int], sample_size: int, seed: int) -> list[int]:
+    """Seleciona exemplos em rodízio entre classes, com ordem reprodutível."""
+    labels = [int(label) for label in labels]
+    if sample_size <= 0 or sample_size >= len(labels):
+        return list(range(len(labels)))
+
+    by_class: dict[int, list[int]] = defaultdict(list)
+    for index, label in enumerate(labels):
+        by_class[label].append(index)
+
+    rng = random.Random(seed)
+    for indices in by_class.values():
+        rng.shuffle(indices)
+
+    selected: list[int] = []
+    while len(selected) < sample_size:
+        added = False
+        for label in sorted(by_class):
+            if by_class[label]:
+                selected.append(by_class[label].pop())
+                added = True
+                if len(selected) == sample_size:
+                    break
+        if not added:
+            break
+    rng.shuffle(selected)
+    return selected
+
+
+def make_gradcam_loader(test_data: Dataset, config: RunConfig) -> DataLoader:
+    """Cria uma amostra estratificada separada para a análise Grad-CAM."""
+    if isinstance(test_data, Subset):
+        base_labels = test_data.dataset.labels
+        labels = [base_labels[index] for index in test_data.indices]
+    else:
+        labels = test_data.labels
+    indices = stratified_sample_indices(labels, config.gradcam_samples, config.seed)
+    return DataLoader(
+        Subset(test_data, indices),
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
 
 def make_dataloaders(config: RunConfig):
@@ -614,6 +667,9 @@ def main() -> None:
     final_metrics: list[dict] = []
     for strategy in STRATEGIES:
         set_seed(config.seed)
+        # Um novo carregador reinicia o gerador de embaralhamento para que as
+        # duas estratégias recebam a mesma ordem de minibatches.
+        train_loader, validation_loader, _, _ = make_dataloaders(config)
         model = build_model(strategy, len(class_names), device)
         model, history, elapsed = train_strategy(
             strategy,
@@ -632,8 +688,9 @@ def main() -> None:
         histories[strategy] = history
 
     save_training_curves(histories, output_dir / "figures" / "training_curves.png")
+    gradcam_loader = make_gradcam_loader(test_loader.dataset, config)
     gradcam_summary = analyze_gradcam(
-        models, test_loader, device, class_names, config, output_dir
+        models, gradcam_loader, device, class_names, config, output_dir
     )
     with (output_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as stream:
         fields = list(final_metrics[0].keys())

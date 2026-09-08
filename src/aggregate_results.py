@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
@@ -30,6 +31,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--output-dir", default="results/aggregate")
+    parser.add_argument("--expected-seeds", nargs="+", type=int, default=[42, 123, 2026])
+    parser.add_argument(
+        "--expected-seeds",
+        default="42,123,2026",
+        help="Sementes obrigatórias, separadas por vírgula; use vazio para não validar.",
+    )
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -41,6 +48,28 @@ def main() -> None:
             summaries.append((path.parent.name, json.load(stream)))
     if not summaries:
         raise SystemExit("Nenhum results/seed_*/summary.json foi encontrado.")
+    observed_seeds = {
+        int(seed_name.removeprefix("seed_"))
+        for seed_name, _summary in summaries
+    }
+    expected_seeds = set(args.expected_seeds)
+    if observed_seeds != expected_seeds:
+        missing = sorted(expected_seeds - observed_seeds)
+        unexpected = sorted(observed_seeds - expected_seeds)
+        raise SystemExit(
+            f"Conjunto de sementes incompleto. Ausentes: {missing}; inesperadas: {unexpected}."
+        )
+    expected = {
+        f"seed_{seed.strip()}" for seed in args.expected_seeds.split(",") if seed.strip()
+    }
+    found = {seed for seed, _ in summaries}
+    if expected and found != expected:
+        missing = sorted(expected - found)
+        unexpected = sorted(found - expected)
+        raise SystemExit(
+            "Conjunto de sementes incompleto ou inesperado. "
+            f"Ausentes: {missing or 'nenhuma'}; inesperadas: {unexpected or 'nenhuma'}."
+        )
 
     classification_values: dict[str, dict[str, list[float]]] = defaultdict(
         lambda: defaultdict(list)
@@ -69,10 +98,15 @@ def main() -> None:
 
     write_csv(output_dir / "classification_aggregate.csv", classification_rows)
     write_csv(output_dir / "gradcam_aggregate.csv", gradcam_rows)
+    representative_figure = results_dir / "seed_42" / "figures" / "gradcam_examples.png"
+    if representative_figure.exists():
+        figure_dir = output_dir / "figures"
+        figure_dir.mkdir(exist_ok=True)
+        shutil.copy2(representative_figure, figure_dir / "gradcam_examples.png")
     with (output_dir / "aggregate_summary.json").open("w", encoding="utf-8") as stream:
         json.dump(
             {
-                "seeds": [seed for seed, _ in summaries],
+                "seeds": sorted(observed_seeds),
                 "classification": classification_rows,
                 "gradcam": gradcam_rows,
             },
@@ -84,4 +118,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

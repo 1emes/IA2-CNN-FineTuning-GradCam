@@ -39,13 +39,13 @@ Para uma verificação rápida:
 python src/experiment.py --epochs 1 --train-fraction 0.10 --test-limit 128 --gradcam-samples 20 --output-dir results/quick
 ```
 
-Para o experimento principal:
+Para uma semente do experimento principal:
 
 ```powershell
-python src/experiment.py --epochs 15 --train-fraction 1.0 --gradcam-samples 200 --output-dir results/main
+python src/experiment.py --epochs 15 --train-fraction 1.0 --gradcam-samples 200 --seed 42 --output-dir results/seed_42
 ```
 
-As execuções com múltiplas sementes podem ser iniciadas com:
+As três execuções e a agregação podem ser iniciadas com:
 
 ```powershell
 ./run_all_seeds.ps1
@@ -60,6 +60,8 @@ cd article
 latexmk -pdf main.tex
 ```
 
+O arquivo `article/main.tex` usa diretamente a classe `IEEEtran` no modo de conferência. O agregador copia a figura da semente 42 para `results/aggregate/figures/gradcam_examples.png`; recompile o PDF depois de gerar esse arquivo.
+
 ## Estado do projeto
 
-Este repositório está sendo preparado para publicação. Resultados experimentais, modelos treinados e figuras não fazem parte desta versão inicial.
+Os arquivos versionados em `results/smoke*` são apenas validações funcionais reduzidas. Eles não sustentam conclusões sobre desempenho ou alinhamento espacial. Antes da entrega quantitativa, execute as sementes 42, 123 e 2026, agregue os resultados e atualize o artigo exclusivamente a partir dos CSVs gerados.
